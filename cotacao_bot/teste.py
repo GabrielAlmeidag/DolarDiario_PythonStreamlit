@@ -39,8 +39,12 @@ try:
 
     driver.switch_to.default_content()
 
-    for linha in dados_tabela:
-        print(linha)
+    
+    colunas = ["Data", "Tipo", "Compra", "Venda"]
+    df = pd.DataFrame(dados_tabela, columns=colunas)
+    df = df[:-1]
+    print(df) 
+    
 except NoSuchElementException:
     print("Tabela ou iframe não encontrada.")
 
