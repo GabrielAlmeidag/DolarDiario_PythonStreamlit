@@ -6,9 +6,6 @@ import plotly.express as px
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import atexit
 import time
 
 # Configuração da página
@@ -18,81 +15,100 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inicializa o scheduler
-if 'scheduler' not in st.session_state:
-    scheduler = BackgroundScheduler()
-    scheduler.start()
-    st.session_state.scheduler = scheduler
-    atexit.register(lambda: scheduler.shutdown())
-
-# Função para buscar cotações
+# Função otimizada para buscar cotações
 def get_currency_data(currency, start_date, end_date):
-    start_str = start_date.strftime('%m-%d-%Y')
-    end_str = end_date.strftime('%m-%d-%Y')
+    date_format = '%m-%d-%Y'
+    base_url = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/"
     
-    if currency == "dolar":
-        url = f"https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='{start_str}'&@dataFinalCotacao='{end_str}'&$format=json"
-    elif currency == "euro":
-        url = f"https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@moeda='EUR'&@dataInicial='{start_str}'&@dataFinalCotacao='{end_str}'&$format=json"
+    params = {
+        "@dataInicial": f"'{start_date.strftime(date_format)}'",
+        "@dataFinalCotacao": f"'{end_date.strftime(date_format)}'",
+        "$format": "json"
+    }
     
-    response = requests.get(url)
-    data = response.json().get("value", [])
-    return pd.DataFrame(data)
-
-# Função para enviar email
-def send_email(dataframe, to_email, subject):
     try:
-        # Configurações do servidor SMTP (substitua com suas credenciais)
-        smtp_server = "smtp.gmail.com"
-        smtp_port = 587
-        smtp_user = "seu_email@gmail.com"  # Substitua pelo seu email
-        smtp_password = "sua_senha"       # Substitua pela sua senha/app password
+        if currency == "dolar":
+            url = f"{base_url}CotacaoDolarPeriodo(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
+        elif currency == "euro":
+            url = f"{base_url}CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
+            params["@moeda"] = "'EUR'"
+        
+        url += "?" + "&".join([f"{k}={v}" for k,v in params.items()])
+        
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json().get("value", [])
+        
+        if not data:
+            st.warning(f"Nenhum dado encontrado para {currency} no período selecionado")
+        return pd.DataFrame(data)
+        
+    except Exception as e:
+        st.error(f"Erro ao buscar {currency}: {str(e)}")
+        return pd.DataFrame()
+
+# Função robusta para enviar email
+def send_email(dataframe, to_email, subject):
+    if dataframe.empty:
+        st.warning("Nada a enviar - DataFrame vazio")
+        return False
+    
+    try:
+        # Configurações SMTP (substitua com seus dados)
+        smtp_config = {
+            "server": "smtp.gmail.com",
+            "port": 587,
+            "user": "seu_email@gmail.com",  # Substitua
+            "password": "sua_senha"        # Substitua
+        }
         
         # Criar mensagem
         msg = MIMEMultipart()
-        msg['From'] = smtp_user
+        msg['From'] = smtp_config["user"]
         msg['To'] = to_email
         msg['Subject'] = subject
         
-        # Criar corpo do email
-        body = f"""
-        <h1>Cotações PTAX - {datetime.now().strftime('%d/%m/%Y')}</h1>
-        <p>Segue abaixo as cotações solicitadas:</p>
-        {dataframe.to_html()}
+        # Corpo do email formatado
+        html = f"""
+        <h1 style="color: #0066cc;">📊 Cotações PTAX</h1>
+        <p><strong>Período:</strong> {dataframe['dataHoraCotacao'].min()} a {dataframe['dataHoraCotacao'].max()}</p>
+        {dataframe.to_html(index=False, border=1)}
+        <p><em>Atualizado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}</em></p>
         """
         
-        msg.attach(MIMEText(body, 'html'))
+        msg.attach(MIMEText(html, 'html'))
         
-        # Enviar email
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
+        # Envio seguro
+        with smtplib.SMTP(smtp_config["server"], smtp_config["port"]) as server:
             server.starttls()
-            server.login(smtp_user, smtp_password)
+            server.login(smtp_config["user"], smtp_config["password"])
             server.send_message(msg)
         
         return True
+        
     except Exception as e:
-        st.error(f"Erro ao enviar email: {e}")
+        st.error(f"Falha no envio: {str(e)}")
         return False
 
-# Barra lateral com filtros
+# Barra lateral com controles
 with st.sidebar:
-    st.header("Filtros")
+    st.header("🔍 Filtros")
     
-    # Filtro de moedas
+    # Seleção de moedas
     moedas = st.multiselect(
         "Selecione as moedas",
         ["Dólar", "Euro"],
         default=["Dólar"]
     )
     
-    # Filtro de datas
+    # Seleção de período
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Data inicial", datetime.now() - timedelta(days=30))
+        start_date = st.date_input("Data inicial", datetime.now() - timedelta(days=7))
     with col2:
         end_date = st.date_input("Data final", datetime.now())
     
-    # Filtro de tipo de cotação
+    # Tipo de cotação
     tipo_cotacao = st.radio(
         "Tipo de cotação",
         ["Compra", "Venda"],
@@ -100,182 +116,109 @@ with st.sidebar:
         horizontal=True
     )
 
-    st.header("Envio de Email")
-    email_enabled = st.checkbox("Ativar envio de emails")
+    # Controle de envio de email
+    st.header("📤 Envio por Email")
+    email_to = st.text_input("Destinatário", "exemplo@email.com")
+    email_subject = st.text_input("Assunto", f"Cotações PTAX - {datetime.now().strftime('%d/%m/%Y')}")
     
-    if email_enabled:
-        email_to = st.text_input("Destinatário", "destinatario@email.com")
-        email_subject = st.text_input("Assunto", f"Cotações PTAX - {datetime.now().strftime('%d/%m/%Y')}")
-        
-        frequency = st.selectbox(
-            "Frequência de envio",
-            ["Único", "Diário", "Semanal", "Mensal"],
-            index=0
-        )
-        
-        if frequency != "Único":
-            send_time = st.time_input("Horário do envio", datetime.now().time())
-            
-            if frequency == "Semanal":
-                day_of_week = st.selectbox("Dia da semana", ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"])
-            elif frequency == "Mensal":
-                day_of_month = st.number_input("Dia do mês", min_value=1, max_value=28, value=1)
-        
-        if st.button("Agendar Envio"):
-            if 'df' in globals() and 'df' in locals() and not df.empty:
-                if frequency == "Único":
-                    if 'df' in globals() and 'df' in locals() and not df.empty and send_email(df, email_to, email_subject):
-                        st.success("Email enviado com sucesso!")
+    if st.button("Enviar Relatório", type="primary"):
+        if 'df' in globals() and not df.empty:
+            with st.spinner("Enviando email..."):
+                if send_email(df, email_to, email_subject):
+                    st.success("Email enviado com sucesso!")
+                    st.balloons()
                 else:
-                    # Configura o agendamento recorrente
-                    if frequency == "Diário":
-                        trigger = CronTrigger(
-                            hour=send_time.hour,
-                            minute=send_time.minute,
-                            day_of_week='*'
-                        )
-                    elif frequency == "Semanal":
-                        days_map = {"Segunda": "mon", "Terça": "tue", "Quarta": "wed", 
-                                   "Quinta": "thu", "Sexta": "fri", "Sábado": "sat", "Domingo": "sun"}
-                        trigger = CronTrigger(
-                            hour=send_time.hour,
-                            minute=send_time.minute,
-                            day_of_week=days_map[day_of_week]
-                        )
-                    elif frequency == "Mensal":
-                        trigger = CronTrigger(
-                            hour=send_time.hour,
-                            minute=send_time.minute,
-                            day=day_of_month
-                        )
-                    
-                    st.session_state.scheduler.add_job(
-                        send_email,
-                        trigger,
-                        args=[df, email_to, email_subject]
-                    )
-                    st.success(f"Email agendado para envio {frequency.lower()} às {send_time.strftime('%H:%M')}")
-            else:
-                st.warning("Nenhum dado disponível para enviar")
+                    st.error("Falha ao enviar email")
+        else:
+            st.warning("Nenhum dado disponível para enviar")
 
-# Busca dados
-df_dolar = pd.DataFrame()
-df_euro = pd.DataFrame()
+# Busca e processamento dos dados
+@st.cache_data(ttl=3600, show_spinner="Buscando dados...")
+def load_data(moedas, start_date, end_date):
+    dfs = []
+    
+    if "Dólar" in moedas:
+        df_dolar = get_currency_data("dolar", start_date, end_date)
+        if not df_dolar.empty:
+            df_dolar["Moeda"] = "Dólar"
+            df_dolar["dataHoraCotacao"] = pd.to_datetime(df_dolar["dataHoraCotacao"])
+            dfs.append(df_dolar)
+    
+    if "Euro" in moedas:
+        df_euro = get_currency_data("euro", start_date, end_date)
+        if not df_euro.empty:
+            df_euro["Moeda"] = "Euro"
+            df_euro["dataHoraCotacao"] = pd.to_datetime(df_euro["dataHoraCotacao"])
+            dfs.append(df_euro)
+    
+    return pd.concat(dfs) if dfs else pd.DataFrame()
 
-if "Dólar" in moedas:
-    df_dolar = get_currency_data("dolar", start_date, end_date)
-    if not df_dolar.empty:
-        df_dolar["dataHoraCotacao"] = pd.to_datetime(df_dolar["dataHoraCotacao"])
-        df_dolar["Moeda"] = "Dólar"
+df = load_data(moedas, start_date, end_date)
 
-if "Euro" in moedas:
-    df_euro = get_currency_data("euro", start_date, end_date)
-    if not df_euro.empty:
-        df_euro["dataHoraCotacao"] = pd.to_datetime(df_euro["dataHoraCotacao"])
-        df_euro["Moeda"] = "Euro"
-
-# Combine os dados
-df = pd.concat([df_dolar, df_euro])
-
-# Layout principal
-st.title("📈 Dashboard de Cotações PTAX")
+# Visualização principal
+st.title("📈 Dashboard Cotações PTAX")
 st.markdown("---")
 
-# Seção de KPIs
 if not df.empty:
-    st.header("Indicadores Chave")
+    # Seção de KPIs dinâmicos
+    st.header("📊 Indicadores Chave")
     col1, col2, col3, col4 = st.columns(4)
     
     ultima_cotacao = df.sort_values("dataHoraCotacao").groupby("Moeda").last()
     coluna = 'cotacaoCompra' if tipo_cotacao == "Compra" else 'cotacaoVenda'
     
-    with col1:
+    # Função auxiliar para métricas
+    def create_metric(label, currency):
+        if currency in moedas:
+            current = ultima_cotacao.loc[currency, coluna]
+            mean = df[df["Moeda"]==currency][coluna].mean()
+            delta = ((current - mean)/mean*100) if mean != 0 else 0
+            st.metric(
+                label=f"{label} ({tipo_cotacao})",
+                value=f"R$ {current:.4f}",
+                delta=f"{delta:.2f}%"
+            )
+        else:
+            st.metric(label=label, value="-")
+    
+    with col1: create_metric("Dólar", "Dólar")
+    with col2: create_metric("Euro", "Euro")
+    with col3: 
         if "Dólar" in moedas:
-            current = ultima_cotacao.loc['Dólar', coluna]
-            mean = df_dolar[coluna].mean()
-            delta = ((current - mean)/mean*100) if mean != 0 else 0
-            st.metric(
-                label=f"Cotação Atual Dólar ({tipo_cotacao})",
-                value=f"R$ {current:.4f}",
-                delta=f"{delta:.2f}%"
-            )
+            variation = df[df["Moeda"]=="Dólar"][coluna].iloc[-1] - df[df["Moeda"]=="Dólar"][coluna].iloc[0]
+            percent = (variation/df[df["Moeda"]=="Dólar"][coluna].iloc[0]*100) if df[df["Moeda"]=="Dólar"][coluna].iloc[0] != 0 else 0
+            st.metric("Variação Dólar", f"R$ {variation:.4f}", f"{percent:.2f}%")
         else:
-            st.metric(label="Cotação Dólar", value="-")
-    
-    with col2:
-        if "Euro" in moedas:
-            current = ultima_cotacao.loc['Euro', coluna]
-            mean = df_euro[coluna].mean()
-            delta = ((current - mean)/mean*100) if mean != 0 else 0
-            st.metric(
-                label=f"Cotação Atual Euro ({tipo_cotacao})",
-                value=f"R$ {current:.4f}",
-                delta=f"{delta:.2f}%"
-            )
-        else:
-            st.metric(label="Cotação Euro", value="-")
-    
-    with col3:
-        if "Dólar" in moedas and len(df_dolar) > 1:
-            variation = df_dolar[coluna].iloc[-1] - df_dolar[coluna].iloc[0]
-            percent = (variation/df_dolar[coluna].iloc[0]*100) if df_dolar[coluna].iloc[0] != 0 else 0
-            st.metric(
-                label=f"Variação Dólar ({tipo_cotacao})",
-                value=f"R$ {variation:.4f}",
-                delta=f"{percent:.2f}%"
-            )
-        else:
-            st.metric(label="Variação Dólar", value="-")
-    
+            st.metric("Variação Dólar", "-")
     with col4:
-        if "Euro" in moedas and len(df_euro) > 1:
-            variation = df_euro[coluna].iloc[-1] - df_euro[coluna].iloc[0]
-            percent = (variation/df_euro[coluna].iloc[0]*100) if df_euro[coluna].iloc[0] != 0 else 0
-            st.metric(
-                label=f"Variação Euro ({tipo_cotacao})",
-                value=f"R$ {variation:.4f}",
-                delta=f"{percent:.2f}%"
-            )
+        if "Euro" in moedas:
+            variation = df[df["Moeda"]=="Euro"][coluna].iloc[-1] - df[df["Moeda"]=="Euro"][coluna].iloc[0]
+            percent = (variation/df[df["Moeda"]=="Euro"][coluna].iloc[0]*100) if df[df["Moeda"]=="Euro"][coluna].iloc[0] != 0 else 0
+            st.metric("Variação Euro", f"R$ {variation:.4f}", f"{percent:.2f}%")
         else:
-            st.metric(label="Variação Euro", value="-")
+            st.metric("Variação Euro", "-")
 
-# Gráficos
-st.markdown("---")
-st.header("Análise Temporal")
-
-if not df.empty:
-    coluna = 'cotacaoCompra' if tipo_cotacao == "Compra" else 'cotacaoVenda'
+    # Gráfico interativo
+    st.markdown("---")
+    st.header("📅 Evolução Temporal")
     
     fig = px.line(
         df,
         x="dataHoraCotacao",
         y=coluna,
         color="Moeda",
-        title=f"Evolução da Cotação de {tipo_cotacao}",
-        labels={
-            "dataHoraCotacao": "Data",
-            coluna: f"Valor (R$)"
-        }
-    )
-    fig.update_layout(
-        hovermode="x unified",
-        xaxis_title="Data",
-        yaxis_title=f"Valor de {tipo_cotacao} (R$)",
-        legend_title="Moeda"
+        title=f"Cotação de {tipo_cotacao}",
+        labels={coluna: "Valor (R$)", "dataHoraCotacao": "Data"},
+        hover_data={"Moeda": True, coluna: ":.4f"}
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# Tabela de dados
-st.markdown("---")
-st.header("Dados Detalhados")
-
-if not df.empty:
+    # Tabela detalhada
+    st.markdown("---")
+    st.header("📋 Dados Completos")
+    
     df_display = df[["Moeda", "dataHoraCotacao", "cotacaoCompra", "cotacaoVenda"]].copy()
-    df_display = df_display.rename(columns={
-        "dataHoraCotacao": "Data/Hora",
-        "cotacaoCompra": "Compra (R$)",
-        "cotacaoVenda": "Venda (R$)"
-    })
+    df_display.columns = ["Moeda", "Data/Hora", "Compra (R$)", "Venda (R$)"]
     df_display["Data/Hora"] = df_display["Data/Hora"].dt.strftime("%d/%m/%Y %H:%M")
     
     st.dataframe(
@@ -283,33 +226,34 @@ if not df.empty:
             "Compra (R$)": "{:.4f}",
             "Venda (R$)": "{:.4f}"
         }),
-        use_container_width=True,
-        height=400
+        height=400,
+        use_container_width=True
     )
+    
 else:
-    st.warning("Nenhum dado disponível para os filtros selecionados")
+    st.warning("⚠️ Nenhum dado encontrado para os filtros selecionados")
+    st.info("Dicas: Verifique se as datas são dias úteis e se a API do BC está acessível")
 
-# Estilo CSS adicional
+# Estilos CSS melhorados
 st.markdown("""
 <style>
     .stMetric {
-        border: 1px solid #e6e6e6;
-        border-radius: 8px;
+        background: white;
+        border-radius: 10px;
         padding: 15px;
-        background-color: #f9f9f9;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     .stMetric label {
-        font-size: 14px;
-        color: #555;
-        font-weight: bold;
+        font-weight: 600;
+        color: #444;
     }
     .stMetric value {
-        font-size: 24px;
-        font-weight: bold;
+        font-size: 1.5rem;
     }
-    .css-1aumxhk {
-        background-color: #f0f2f6;
+    .stButton>button {
+        background-color: #0066cc;
+        color: white;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
