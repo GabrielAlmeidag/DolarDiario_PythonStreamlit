@@ -29,19 +29,14 @@ def get_currency_data(currency: str, start_date, end_date) -> pd.DataFrame:
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        data = response.json().get("value", [])
-        return pd.DataFrame(data)
+        return pd.DataFrame(response.json().get("value", []))
     except:
         return pd.DataFrame()
 
 def send_email_via_outlook(dataframe: pd.DataFrame, to_email: str, subject: str) -> bool:
     if dataframe.empty:
         return False
-    df = dataframe.copy()
-    df["Data/Hora"] = pd.to_datetime(df["dataHoraCotacao"]).dt.strftime("%d/%m/%Y %H:%M")
-    df = df[["Moeda", "Data/Hora", "cotacaoCompra", "cotacaoVenda"]]
-    df.columns = ["Moeda", "Data/Hora", "Compra (R$)", "Venda (R$)"]
-    html_table = df.to_html(
+    html_table = dataframe.to_html(
         index=False,
         header=True,
         border=0,
@@ -59,9 +54,6 @@ def send_email_via_outlook(dataframe: pd.DataFrame, to_email: str, subject: str)
       tr:nth-child(even) {{ background-color: #f9f9f9; }}
     </style>
     <h1 style="color: #0066cc; font-family: Arial, sans-serif;">📊 Cotações PTAX</h1>
-    <p style="font-family: Arial, sans-serif;">
-      <strong>Período:</strong> {df['Data/Hora'].min()} a {df['Data/Hora'].max()}
-    </p>
     {html_table}
     <p style="font-family: Arial, sans-serif; font-size:0.9em;">
       <em>Atualizado em: {datetime.now():%d/%m/%Y %H:%M}</em>
@@ -105,26 +97,25 @@ def load_data(moedas, start_date, end_date):
     return pd.concat(dfs) if dfs else pd.DataFrame()
 
 df = load_data(moedas, start_date, end_date)
-st.session_state['df'] = df
+ultima = df.sort_values("dataHoraCotacao").groupby("Moeda").last()
+df_last = ultima.reset_index()
+df_last["Data/Hora"] = df_last["dataHoraCotacao"].dt.strftime("%d/%m/%Y %H:%M")
+df_last = df_last[["Moeda", "Data/Hora", "cotacaoCompra", "cotacaoVenda"]].rename(
+    columns={"cotacaoCompra": "Compra (R$)", "cotacaoVenda": "Venda (R$)"}
+)
 
 if st.sidebar.button("Enviar Relatório", type="primary"):
-    df_session = st.session_state.get('df', pd.DataFrame())
-    if not df_session.empty:
-        with st.spinner("Enviando email..."):
-            if send_email_via_outlook(df_session, email_to, email_subject):
-                st.success("Email enviado com sucesso via Outlook!")
-                st.balloons()
-            else:
-                st.error("Falha ao enviar email")
+    if send_email_via_outlook(df_last, email_to, email_subject):
+        st.success("Email enviado com sucesso via Outlook!")
+        st.balloons()
     else:
-        st.warning("Nenhum dado disponível para enviar")
+        st.error("Falha ao enviar email")
 
 st.title("📈 Dashboard Cotações PTAX")
 st.markdown("---")
 
 if not df.empty:
-    ultima = df.sort_values("dataHoraCotacao").groupby("Moeda").last()
-    coluna = 'cotacaoCompra' if tipo_cotacao == "Compra" else 'cotacaoVenda'
+    coluna = "cotacaoCompra" if tipo_cotacao == "Compra" else "cotacaoVenda"
     cols_val = st.columns(len(moedas))
     for col, moeda in zip(cols_val, moedas):
         val = ultima.loc[moeda, coluna]
@@ -140,15 +131,12 @@ if not df.empty:
         with col:
             st.metric(f"Variação {moeda}", f"R$ {var:.4f}", f"{pct:.2f}%")
     st.markdown("---")
-    fig = px.line(df, x="dataHoraCotacao", y=coluna, color="Moeda", labels={coluna: "Valor (R$)", "dataHoraCotacao": "Data"})
+    fig = px.line(df, x="dataHoraCotacao", y=coluna, color="Moeda",
+                  labels={coluna: "Valor (R$)", "dataHoraCotacao": "Data"})
     st.plotly_chart(fig, use_container_width=True)
     st.markdown("---")
-    df_disp = (
-        df[["Moeda", "dataHoraCotacao", "cotacaoCompra", "cotacaoVenda"]]
-        .rename(columns={"dataHoraCotacao": "Data/Hora", "cotacaoCompra": "Compra (R$)", "cotacaoVenda": "Venda (R$)"})
-    )
-    df_disp["Data/Hora"] = df_disp["Data/Hora"].dt.strftime("%d/%m/%Y %H:%M")
-    st.dataframe(df_disp.style.format({"Compra (R$)": "{:.4f}", "Venda (R$)": "{:.4f}"}), height=400, use_container_width=True)
+    st.markdown("### Última cotação disponível")
+    st.dataframe(df_last.style.format({"Compra (R$)": "{:.4f}", "Venda (R$)": "{:.4f}"}), use_container_width=True)
 else:
     st.warning("⚠️ Nenhum dado encontrado para os filtros selecionados")
     st.info("Dicas: use datas de dias úteis e verifique a API do BC")
