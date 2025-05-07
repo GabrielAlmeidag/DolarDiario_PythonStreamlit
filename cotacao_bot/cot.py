@@ -6,66 +6,95 @@ import plotly.express as px
 import pythoncom
 import win32com.client as win32
 
-st.set_page_config(page_title="Dashboard Cotações PTAX", page_icon="📈", layout="wide")
+# — Page config —
+st.set_page_config(
+    page_title="Dashboard Cotações PTAX",
+    page_icon="📈",
+    layout="wide"
+)
 
-def get_currency_data(currency: str, start_date, end_date) -> pd.DataFrame:
-    date_format = '%m-%d-%Y'
-    base_url = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/"
+# — Custom CSS for polished UI —
+st.markdown("""
+<style>
+body { background: #f0f2f5; color: #2b2b2b; }
+.stSidebar { background: #ffffff; }
+.metric-card {
+  background: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+  color: white;
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  text-align: center;
+}
+.metric-card h4 { margin: 0.5rem 0 0.2rem; font-size: 1.1rem; }
+.metric-card .value { font-size: 2rem; font-weight: 700; margin: 0.2rem 0; }
+.metric-card .delta { font-size: 0.9rem; }
+.metric-card .delta.up { color: #00b894; }
+.metric-card .delta.down { color: #d63031; }
+.metrics-container {
+  display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-bottom: 2rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# — Data functions —
+def get_currency_data(code, start, end):
+    url_base = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/"
+    fmt = "%m-%d-%Y"
     params = {
-        "@dataInicial": f"'{start_date.strftime(date_format)}'",
-        "@dataFinalCotacao": f"'{end_date.strftime(date_format)}'",
+        "@dataInicial": f"'{start.strftime(fmt)}'",
+        "@dataFinalCotacao": f"'{end.strftime(fmt)}'",
         "$format": "json"
     }
-    if currency.upper() == "USD":
-        endpoint = "CotacaoDolarPeriodo"
+    if code == "USD":
+        ep = "CotacaoDolarPeriodo"
     else:
-        endpoint = "CotacaoMoedaPeriodo"
-        params["@moeda"] = f"'{currency.upper()}'"
-    if endpoint == "CotacaoDolarPeriodo":
-        url = f"{base_url}{endpoint}(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
+        ep = "CotacaoMoedaPeriodo"
+        params["@moeda"] = f"'{code}'"
+    url = f"{url_base}{ep}("
+    if ep == "CotacaoDolarPeriodo":
+        url += "dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao"
     else:
-        url = f"{base_url}{endpoint}(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
-    url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+        url += "moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao"
+    url += ")?" + "&".join(f"{k}={v}" for k,v in params.items())
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return pd.DataFrame(response.json().get("value", []))
+        r = requests.get(url, timeout=10); r.raise_for_status()
+        return pd.DataFrame(r.json().get("value", []))
     except:
         return pd.DataFrame()
 
-def send_email_via_outlook(dataframe: pd.DataFrame, to_email: str, subject: str) -> bool:
-    if dataframe.empty:
-        return False
-    html_table = dataframe.to_html(
-        index=False,
-        header=True,
-        border=0,
-        justify="center",
-        formatters={
-            "Compra (R$)": lambda x: f"R$ {x:.4f}",
-            "Venda (R$)": lambda x: f"R$ {x:.4f}"
-        }
-    )
-    html = f"""
+@st.cache_data(ttl=1800)
+def load_data(codes, start, end):
+    frames = []
+    for c in codes:
+        d = get_currency_data(c, start, end)
+        if not d.empty:
+            d["Moeda"] = c
+            d["dataHoraCotacao"] = pd.to_datetime(d["dataHoraCotacao"])
+            frames.append(d)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+def send_email(df, to_email, subject):
+    if df.empty: return False
+    html = df.to_html(index=False, border=0, justify="center",
+                      formatters={
+                        "Compra (R$)": lambda x: f"R$ {x:.4f}",
+                        "Venda (R$)": lambda x: f"R$ {x:.4f}"
+                      })
+    body = f"""
     <style>
-      table {{ border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }}
-      th {{ background-color: #0066cc; color: white; padding: 10px; text-align: center; }}
-      td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
-      tr:nth-child(even) {{ background-color: #f9f9f9; }}
+      table {{ border-collapse: collapse; width: 100%; font-family: Arial,sans-serif; }}
+      th {{ background: #6c5ce7; color: #fff; padding: 8px; }}
+      td {{ border: 1px solid #ddd; padding: 8px; }}
     </style>
-    <h1 style="color: #0066cc; font-family: Arial, sans-serif;">📊 Cotações PTAX</h1>
-    {html_table}
-    <p style="font-family: Arial, sans-serif; font-size:0.9em;">
-      <em>Atualizado em: {datetime.now():%d/%m/%Y %H:%M}</em>
-    </p>
+    <h2 style="color:#6c5ce7">📊 Cotações PTAX</h2>
+    {html}
+    <p><em>Atualizado em {datetime.now():%d/%m/%Y %H:%M}</em></p>
     """
     try:
         pythoncom.CoInitialize()
-        outlook = win32.Dispatch('outlook.application')
-        mail = outlook.CreateItem(0)
-        mail.To = to_email
-        mail.Subject = subject
-        mail.HTMLBody = html
+        mail = win32.Dispatch("outlook.application").CreateItem(0)
+        mail.To, mail.Subject, mail.HTMLBody = to_email, subject, body
         mail.Send()
         return True
     except:
@@ -73,79 +102,90 @@ def send_email_via_outlook(dataframe: pd.DataFrame, to_email: str, subject: str)
     finally:
         pythoncom.CoUninitialize()
 
-with st.sidebar:
-    moedas = st.multiselect("Selecione as moedas", ["USD", "EUR", "GBP"], default=["USD"])
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Data inicial", datetime.now() - timedelta(days=7))
-    with col2:
-        end_date = st.date_input("Data final", datetime.now())
-    tipo_cotacao = st.radio("Tipo de cotação", ["Compra", "Venda"], index=0, horizontal=True)
-    st.markdown("---")
-    email_to = st.text_input("Destinatário", "exemplo@email.com")
-    email_subject = st.text_input("Assunto", f"Cotações PTAX - {datetime.now():%d/%m/%Y}")
+# — Sidebar —
+st.sidebar.header("🔧 Configurações")
+today = datetime.now().date()
+only_today = st.sidebar.checkbox("Somente hoje", True)
+if only_today:
+    start_date = end_date = today
+else:
+    start_date, end_date = st.sidebar.date_input(
+        "Período",
+        [today - timedelta(days=7), today],
+        min_value=today - timedelta(days=365),
+        max_value=today
+    )
+codes = st.sidebar.multiselect("Escolha moedas", ["USD","EUR","GBP"], ["USD"])
+quote_type = st.sidebar.radio("Tipo", ["Compra","Venda"], horizontal=True)
+st.sidebar.markdown("---")
+email_to = st.sidebar.text_input("Enviar para")
+email_subj = st.sidebar.text_input("Assunto", f"PTAX {today:%d/%m/%Y}")
+if st.sidebar.button("📤 Enviar relatório"):
+    last = latest_df[["Moeda","Data/Hora","Compra (R$)","Venda (R$)"]]
+    ok = send_email(last, email_to, email_subj)
+    st.sidebar.success("Enviado!" if ok else "Falha no envio")
 
-@st.cache_data(ttl=3600, show_spinner="Buscando dados...")
-def load_data(moedas, start_date, end_date):
-    dfs = []
-    for cur in moedas:
-        df_cur = get_currency_data(cur, start_date, end_date)
-        if not df_cur.empty:
-            df_cur["Moeda"] = cur
-            df_cur["dataHoraCotacao"] = pd.to_datetime(df_cur["dataHoraCotacao"])
-            dfs.append(df_cur)
-    return pd.concat(dfs) if dfs else pd.DataFrame()
+# — Load & prepare —
+df = load_data(codes, start_date, end_date)
+if df.empty:
+    st.warning("Nenhum dado disponível para o período selecionado.")
+    st.stop()
 
-df = load_data(moedas, start_date, end_date)
-ultima = df.sort_values("dataHoraCotacao").groupby("Moeda").last()
-df_last = ultima.reset_index()
-df_last["Data/Hora"] = df_last["dataHoraCotacao"].dt.strftime("%d/%m/%Y %H:%M")
-df_last = df_last[["Moeda", "Data/Hora", "cotacaoCompra", "cotacaoVenda"]].rename(
-    columns={"cotacaoCompra": "Compra (R$)", "cotacaoVenda": "Venda (R$)"}
+latest_df = (
+    df.sort_values("dataHoraCotacao")
+      .groupby("Moeda")
+      .last()
+      .reset_index()
+)
+latest_df["Data/Hora"] = latest_df["dataHoraCotacao"].dt.strftime("%d/%m/%Y %H:%M")
+latest_df = latest_df.rename(
+    columns={"cotacaoCompra":"Compra (R$)", "cotacaoVenda":"Venda (R$)"}
 )
 
-if st.sidebar.button("Enviar Relatório", type="primary"):
-    if send_email_via_outlook(df_last, email_to, email_subject):
-        st.success("Email enviado com sucesso via Outlook!")
-        st.balloons()
-    else:
-        st.error("Falha ao enviar email")
-
+# — Header —
 st.title("📈 Dashboard Cotações PTAX")
-st.markdown("---")
+st.caption(f"Período: {start_date:%d/%m/%Y} – {end_date:%d/%m/%Y}")
 
-if not df.empty:
-    coluna = "cotacaoCompra" if tipo_cotacao == "Compra" else "cotacaoVenda"
-    cols_val = st.columns(len(moedas))
-    for col, moeda in zip(cols_val, moedas):
-        val = ultima.loc[moeda, coluna]
-        mean = df[df["Moeda"] == moeda][coluna].mean()
-        delta = ((val - mean) / mean * 100) if mean else 0
-        with col:
-            st.metric(f"{moeda} ({tipo_cotacao})", f"R$ {val:.4f}", f"{delta:.2f}%")
-    cols_var = st.columns(len(moedas))
-    for col, moeda in zip(cols_var, moedas):
-        series = df[df["Moeda"] == moeda][coluna]
-        var = series.iloc[-1] - series.iloc[0]
-        pct = (var / series.iloc[0] * 100) if series.iloc[0] else 0
-        with col:
-            st.metric(f"Variação {moeda}", f"R$ {var:.4f}", f"{pct:.2f}%")
-    st.markdown("---")
-    fig = px.line(df, x="dataHoraCotacao", y=coluna, color="Moeda",
-                  labels={coluna: "Valor (R$)", "dataHoraCotacao": "Data"})
+field = "cotacaoCompra" if quote_type=="Compra" else "cotacaoVenda"
+
+# — Tabs —
+tab1, tab2, tab3 = st.tabs(["📊 Métricas", "📈 Gráfico", "📋 Tabela"])
+
+with tab1:
+    st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
+    for c in codes:
+        val = float(latest_df.loc[latest_df["Moeda"]==c, f"{'Compra (R$)' if quote_type=='Compra' else 'Venda (R$)'}"])
+        avg = df[df["Moeda"]==c][field].mean()
+        d = (val - avg)/avg*100 if avg else 0
+        cls = "up" if d>=0 else "down"
+        st.markdown(f"""
+          <div class="card metric-card">
+            <h4>{c} ({quote_type})</h4>
+            <div class="value">R$ {val:.4f}</div>
+            <div class="delta {cls}">{d:+.2f}% vs média</div>
+          </div>
+        """, unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab2:
+    fig = px.area(
+        df, x="dataHoraCotacao", y=field, color="Moeda",
+        labels={field:"Valor (R$)","dataHoraCotacao":"Data"},
+        line_shape="spline", template="plotly_white"
+    )
+    fig.update_traces(mode="lines+markers", marker=dict(size=6), opacity=0.6, fill='tozeroy')
+    fig.update_layout(
+        height=450,
+        hovermode="x unified",
+        legend_title_text="Moeda",
+        xaxis=dict(rangeslider=dict(visible=True)),
+        margin=dict(l=20,r=20,t=40,b=20)
+    )
     st.plotly_chart(fig, use_container_width=True)
-    st.markdown("---")
-    st.markdown("### Última cotação disponível")
-    st.dataframe(df_last.style.format({"Compra (R$)": "{:.4f}", "Venda (R$)": "{:.4f}"}), use_container_width=True)
-else:
-    st.warning("⚠️ Nenhum dado encontrado para os filtros selecionados")
-    st.info("Dicas: use datas de dias úteis e verifique a API do BC")
 
-st.markdown("""
-<style>
-  .stMetric { background: #f0f5ff; border-radius: 10px; padding: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 10px; }
-  .stMetric label { font-weight: 600; color: #003366; }
-  .stMetric value { font-size: 1.5rem; }
-  .stButton>button { background-color: #0066cc; color: white; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
+with tab3:
+    st.markdown("### Última Cotação Disponível")
+    st.dataframe(
+        latest_df[["Moeda","Data/Hora","Compra (R$)","Venda (R$)"]],
+        use_container_width=True
+    )
