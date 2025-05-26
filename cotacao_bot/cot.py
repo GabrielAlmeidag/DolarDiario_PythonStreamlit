@@ -8,6 +8,10 @@ from plotly.subplots import make_subplots
 import numpy as np
 import pythoncom
 import win32com.client as win32
+import threading
+import time
+from datetime import datetime, time as dt_time
+from schedule import Scheduler
 
 # — Page configuration —
 st.set_page_config(
@@ -220,7 +224,58 @@ def send_email(df, to_email, subject, analysis_text=""):
         return False
     finally:
         pythoncom.CoUninitialize()
+# --- Funções de Envio Automático ---
+def prepare_email_data():
+    """Prepara os dados para o e-mail diário"""
+    # Use seu dataframe existente ou crie um específico
+    email_df = latest_df[["Moeda", "Data/Hora", "Compra (R$)", "Venda (R$)"]].copy()
+    email_df["Variação (%)"] = email_df.apply(
+        lambda row: ((row["Compra (R$)"] - metrics_df[metrics_df["Moeda"] == row["Moeda"]]["Compra_Inicial"].values[0]) / 
+                   metrics_df[metrics_df["Moeda"] == row["Moeda"]]["Compra_Inicial"].values[0]) * 100,
+        axis=1
+    )
+    return email_df
 
+def send_daily_email():
+    """Função que será chamada diariamente"""
+    if st.session_state.auto_email_enabled and st.session_state.email_to:
+        try:
+            email_df = prepare_email_data()
+            send_email(
+                email_df, 
+                st.session_state.email_to, 
+                f"Relatório Diário PTAX - {datetime.now().strftime('%d/%m/%Y')}",
+                "Relatório automático de cotações PTAX"
+            )
+            st.success(f"E-mail enviado automaticamente em {datetime.now().strftime('%H:%M')}")
+        except Exception as e:
+            st.error(f"Erro no envio automático: {str(e)}")
+
+def email_scheduler():
+    """Roda em segundo plano verificando o horário"""
+    while st.session_state.get('auto_email_enabled', False):
+        now = datetime.now().time()
+        target_time = dt_time(9, 0)  # 9:00 AM (ajuste conforme necessário)
+        
+        if now.hour == target_time.hour and now.minute == target_time.minute:
+            send_daily_email()
+            time.sleep(61)  # Evita múltiplos envios no mesmo minuto
+        else:
+            time.sleep(30)  # Verifica a cada 30 segundos
+
+def toggle_auto_email():
+    """Alterna o envio automático"""
+    if 'auto_email_enabled' not in st.session_state:
+        st.session_state.auto_email_enabled = False
+    
+    if st.session_state.auto_email_enabled:
+        st.session_state.auto_email_enabled = False
+        st.success("Envio automático DESATIVADO")
+    else:
+        st.session_state.auto_email_enabled = True
+        thread = threading.Thread(target=email_scheduler, daemon=True)
+        thread.start()
+        st.success("Envio automático ATIVADO - E-mails serão enviados às 9:00 AM")
 # — Sidebar controls —
 st.sidebar.header("⚙️ Configurações")
 today = datetime.now().date()
@@ -282,6 +337,108 @@ with st.sidebar.expander("📊 Opções de Análise", expanded=True):
         True,
         help="Mostrar o dólar como referência em gráficos comparativos"
     )
+# Na sidebar (após os controles existentes)
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔔 Envio Automático")
+
+# Email destination (persistente entre execuções)
+if 'email_to' not in st.session_state:
+    st.session_state.email_to = ""
+    
+st.session_state.email_to = st.sidebar.text_input(
+    "E-mail para envio automático",
+    st.session_state.email_to
+)
+
+# Botão de ativação
+if st.sidebar.button(
+    "✅ Ativar Envio Automático" if not st.session_state.get('auto_email_enabled', False) 
+    else "❌ Desativar Envio Automático"
+):
+    toggle_auto_email()
+
+# Status atual
+st.sidebar.markdown(f"""
+**Status:** {'🟢 Ativo (9:00 AM)' if st.session_state.get('auto_email_enabled', False) else '🔴 Inativo'}
+""")
+
+def calculate_monthly_average(df):
+    """
+    Calcula a média mensal das cotações para cada moeda
+    Retorna um DataFrame com as médias de compra e venda por moeda
+    """
+    if df.empty:
+        return pd.DataFrame()
+    
+    # Cria coluna com ano-mês para agrupamento
+    df['AnoMes'] = df['dataHoraCotacao'].dt.to_period('M')
+    
+    # Filtra apenas dados do mês atual
+    current_month = pd.Timestamp.now().to_period('M')
+    month_data = df[df['AnoMes'] == current_month]
+    
+    if month_data.empty:
+        return pd.DataFrame()
+    
+    # Calcula as médias
+    monthly_avg = month_data.groupby('Moeda').agg({
+        'cotacaoCompra': 'mean',
+        'cotacaoVenda': 'mean'
+    }).reset_index()
+    
+    monthly_avg = monthly_avg.rename(columns={
+        'cotacaoCompra': 'Média Compra (R$)',
+        'cotacaoVenda': 'Média Venda (R$)'
+    })
+    
+    # Formata os valores
+    monthly_avg['Média Compra (R$)'] = monthly_avg['Média Compra (R$)'].round(4)
+    monthly_avg['Média Venda (R$)'] = monthly_avg['Média Venda (R$)'].round(4)
+    
+    return monthly_avg
+
+def send_monthly_report():
+    """Envia o relatório mensal automaticamente no último dia do mês"""
+    today = datetime.now()
+    last_day_of_month = (today.replace(day=28) + timedelta(days=4))
+    last_day_of_month = last_day_of_month - timedelta(days=last_day_of_month.day)
+    
+    # Verifica se é o último dia do mês
+    if today.day == last_day_of_month.day:
+        monthly_avg = calculate_monthly_average(df)
+        
+        if not monthly_avg.empty and st.session_state.get('email_recipients'):
+            # Formatação bonita para o e-mail
+            monthly_avg['Mês'] = today.strftime('%B/%Y')
+            html_content = monthly_avg.to_html(
+                index=False, 
+                border=0, 
+                justify='center',
+                float_format=lambda x: f'R$ {x:.4f}'
+            )
+            
+            # Corpo do e-mail formatado
+            email_body = f"""
+            <h2 style="color: #2c3e50;">📊 Relatório Mensal PTAX</h2>
+            <p>Confira as médias mensais das cotações:</p>
+            {html_content}
+            <p style="margin-top: 20px;">
+                <strong>Data do relatório:</strong> {today.strftime('%d/%m/%Y %H:%M')}
+            </p>
+            """
+            
+            # Envia para cada destinatário
+            for recipient in st.session_state.email_recipients:
+                try:
+                    send_email(
+                        monthly_avg,
+                        recipient,
+                        f"Relatório Mensal PTAX - {today.strftime('%m/%Y')}",
+                        email_body
+                    )
+                    st.success(f"Relatório mensal enviado para {recipient}")
+                except Exception as e:
+                    st.error(f"Erro ao enviar para {recipient}: {str(e)}")
 
 # — Load data —
 df, daily_stats = load_data(codes, start_date, end_date)
