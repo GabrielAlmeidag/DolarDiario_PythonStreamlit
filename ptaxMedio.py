@@ -84,7 +84,7 @@ html += f"""<tr>
 
 outlook = win32com.client.Dispatch("Outlook.Application")
 mail = outlook.CreateItem(0)
-mail.To = "destinatario@empresa.com"
+mail.To = "gabriel.almeida@doanalytics.com.br"
 mail.Subject = titulo_email
-mail.HTMLBody = f"<h3>Cotações do Dólar PTAX - {today.strftime('%B').capitalize()}/{year}</h3>{html}"
+mail.HTMLBody = f"<h3>Cotações do Dólar PTAX - {mes_seguinte}</h3>{html}"
 mail.Send()
