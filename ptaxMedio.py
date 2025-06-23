@@ -84,7 +84,7 @@ html += f"""<tr>
 
 outlook = win32com.client.Dispatch("Outlook.Application")
 mail = outlook.CreateItem(0)
-mail.To = "gabriel.almeida@doanalytics.com.br"
+mail.To = "seu email"
 mail.Subject = titulo_email
 mail.HTMLBody = f"<h3>Cotações do Dólar PTAXa - {mes_seguinte} </h3>{html}"
 mail.Send()
