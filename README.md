@@ -3,7 +3,7 @@
 ## Descrição
 Este projeto oferece um dashboard desenvolvido em Streamlit para consulta, visualização e envio de cotações PTAX (dólar e euro) obtidas por meio da API do Banco Central do Brasil. Além dos gráficos e indicadores em tempo real, o sistema permite o envio de relatórios por e-mail de forma automatizada.
 
-##Documentação da API UTILIZADA: 
+## Documentação da API UTILIZADA: 
 https://dadosabertos.bcb.gov.br/dataset/dolar-americano-usd-todos-os-boletins-diarios/resource/ae69aa94-4194-45a6-8bae-12904af7e176
 
 ## Funcionalidades
