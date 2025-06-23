@@ -61,9 +61,10 @@ Em seguida, acesse no navegador: `http://localhost:8501`.
 
 ## Estrutura de Arquivos
 ```
-├── app.py               # Código principal do Streamlit
+├── cot.py               # Código principal do Streamlit
 ├── requirements.txt     # Dependências do projeto
 ├── README.md            # Documentação deste projeto
+├── ptaxMedio.py         # Calcula a média e envia por email
 ```
 
 ## Licença
