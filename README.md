@@ -51,7 +51,7 @@ Este projeto oferece um dashboard desenvolvido em Streamlit para consulta, visua
 ## Uso
 Para executar o dashboard, execute:
 ```bash
-streamlit run cot.py
+streamlit run cotacao_bot/cot.py
 ```
 Em seguida, acesse no navegador: `http://localhost:8501`.
 
